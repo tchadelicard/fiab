@@ -41,11 +41,11 @@ Evaluator.eval("x >= 3", %{"x" => 3})
 
 # Error when dividing by zero
 Evaluator.eval("10 / 0", %{})
-# {:error, "Division by zero"}
+# {:err, "Division by zero"}
 
 # Error when a variable is missing
 Evaluator.eval("x + z", %{"x" => 3})
-# {:error, "Variable 'z' not found in the environment"}
+# {:err, "Variable 'z' not found in the environment"}
 ```
 
 ### 2. Run unit tests

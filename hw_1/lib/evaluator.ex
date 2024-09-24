@@ -20,7 +20,7 @@ defmodule Evaluator do
 
   ## Returns
     - `{:ok, result}`: The result of the evaluated expression.
-    - `{:error, message}`: An error message if evaluation fails.
+    - `{:err, message}`: An error message if evaluation fails.
 
   ## Examples
 
@@ -28,17 +28,17 @@ defmodule Evaluator do
       {:ok, 11}
 
       iex> Evaluator.eval("x + z", %{"x" => 3})
-      {:error, "Variable 'z' not found in the environment"}
+      {:err, "Variable 'z' not found in the environment"}
 
   """
   def eval(expression, env) do
     case Lexer.tokenize(expression) do
       {:illegal_char, char} ->
-        {:error, "Illegal character: #{char}"}
+        {:err, "Illegal character: #{char}"}
       tokens ->
         case Parser.parse(tokens) do
           {:err, message} ->
-            {:error, message}
+            {:err, message}
           {:ok, ast} ->
             evaluate(ast, env)
         end
@@ -52,9 +52,9 @@ defmodule Evaluator do
         case evaluate(right, env) do
           {:ok, right_val} ->
             apply_operator(left_val, op, right_val)
-          {:error, _} = error -> error
+          {:err, _} = error -> error
         end
-      {:error, _} = error -> error
+      {:err, _} = error -> error
     end
   end
 
@@ -65,7 +65,7 @@ defmodule Evaluator do
   defp evaluate({:var, name}, env) do
     case Map.fetch(env, name) do
       {:ok, value} -> {:ok, value}
-      :error -> {:error, "Variable '#{name}' not found in the environment"}
+      :err -> {:err, "Variable '#{name}' not found in the environment"}
     end
   end
 
@@ -84,7 +84,7 @@ defmodule Evaluator do
 
   defp apply_operator(left, :div, right) do
     if right == 0 do
-      {:error, "Division by zero"}
+      {:err, "Division by zero"}
     else
       {:ok, div(left, right)}
     end
