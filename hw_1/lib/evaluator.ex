@@ -65,7 +65,7 @@ defmodule Evaluator do
   defp evaluate({:var, name}, env) do
     case Map.fetch(env, name) do
       {:ok, value} -> {:ok, value}
-      :err -> {:err, "Variable '#{name}' not found in the environment"}
+      :error -> {:err, "Variable '#{name}' not found in the environment"}
     end
   end
 

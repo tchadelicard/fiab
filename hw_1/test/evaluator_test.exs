@@ -60,14 +60,14 @@ defmodule EvaluatorTest do
   # Error Handling Tests
 
   test "evaluate expression with division by zero" do
-    assert Evaluator.eval("x / 0", %{"x" => 10}) == {:error, "Division by zero"}
+    assert Evaluator.eval("x / 0", %{"x" => 10}) == {:err, "Division by zero"}
   end
 
   test "evaluate expression with missing variable" do
-    assert Evaluator.eval("x + z", %{"x" => 3}) == {:error, "Variable 'z' not found in the environment"}
+    assert Evaluator.eval("x + z", %{"x" => 3}) == {:err, "Variable 'z' not found in the environment"}
   end
 
   test "evaluate expression with illegal character" do
-    assert Evaluator.eval("3 + 4 & 2", %{}) == {:error, "Illegal character: &"}
+    assert Evaluator.eval("3 + 4 & 2", %{}) == {:err, "Illegal character: &"}
   end
 end
