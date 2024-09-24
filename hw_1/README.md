@@ -55,7 +55,7 @@ The project includes unit tests for the `Lexer`, `Parser`, and `Evaluator` modul
 To run the tests, use the following command:
 
 ```
-mix tests
+mix test
 ```
 
 This will execute all the test cases in the `test/` directory and display the results.
