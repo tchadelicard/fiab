@@ -10,6 +10,7 @@ defmodule ImtOrder.App do
   @impl true
   def init(_) do
     children = [
+      ImtOrder.StatsToDb.Server,
       {Plug.Cowboy, scheme: :http, plug: ImtOrder.API, options: [port: @port]}
     ]
 

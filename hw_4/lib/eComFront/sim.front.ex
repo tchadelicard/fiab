@@ -123,11 +123,11 @@ defmodule ImtSim.EComFront do
       {
         ReqSender,
         parent: self(),
-        rate: 1,
-        duration: :timer.seconds(30),
+        rate: 100,
+        duration: :timer.seconds(60),
         todo: [
-          {10, &Req.get_req_ko400(&1, "/aggregate-stats/#{:rand.uniform(1000)}", logfile)},
-          {2, &Req.post_random_order(&1, logfile)},
+          {12, &Req.get_req_ko400(&1, "/aggregate-stats/#{:rand.uniform(40000)}", logfile)},
+          {0, &Req.post_random_order(&1, logfile)},
         ]
       }
     ]

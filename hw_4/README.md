@@ -1,19 +1,59 @@
-# Notes
+# Homework 4: ImtOrder Statistics to Database Service
 
-  # ImtOrder
+## Overview
 
-  ImtOrder is a simple software that processes and orchestrates an order, from order
-  place to delivery.
-  It includes :
-  - check and reservation in warehouse
-  - payment
-  - shipping and delivery
+The **ImtOrder Statistics to Database Service** is a GenServer to manage product statistics in memory and periodically save them to a database. The service is designed to scan files for product statistics, update its internal state, and persist the data asynchronously.
 
-  But this software is not able to do everything. Some operations are processed by
-  third parties :
-  - Another software is responsible for stock management,
-  - The payment are processed by a PSP (e.g. Paypal),
-  - Deliveries are made by a specialized company with its own software (e.g. UPS)
+## Features
 
-  What this software does is managing the entire lifecycle of the order, while delegating
-  some precise responsibilities to other systems.
+- **GenServer-based state management**: Manages product statistics in a highly concurrent and fault-tolerant manner.
+- **File scanning**: Automatically scans files for product data and updates the state with the latest statistics.
+- **Periodic saving**: Automatically persists the current state (product statistics) to the database at regular intervals.
+- **Concurrent operations**: Utilizes processes for non-blocking, asynchronous operations such as file scanning and saving.
+- **In-memory data handling**: Keeps product statistics in memory for fast access.
+
+## Usage
+
+You can start the application and interact with the GenServer as follows:
+
+1. **Start the server**:
+
+   ```elixir
+   ImtOrder.StatsToDb.start()
+   ```
+
+2. **Fetching product statistics**:
+   You can fetch statistics for a product by calling:
+
+   ```elixir
+   {:ok, stats} = ImtOrder.StatsToDb.get(product_id)
+   ```
+
+3. **Initiating a file scan**:
+   Trigger a scan for new product statistics by calling:
+
+   ```elixir
+   ImtOrder.StatsToDb.scan()
+   ```
+
+4. **Saving the current state**:
+   Save the current statistics to the database:
+
+   ```elixir
+   ImtOrder.StatsToDb.save()
+   ```
+
+5. **Dumping the entire state**:
+   You can dump the entire state of the server for inspection:
+   ```elixir
+   {:ok, state} = ImtOrder.StatsToDb.dump()
+   ```
+
+## Configuration
+
+You can configure the scanning and saving intervals in the `ImtOrder.StatsToDb.Server` module by modifying the values for `@scan_interval` and `@save_interval`. These are set in milliseconds:
+
+```elixir
+@scan_interval 5000   # Interval for scanning files (5 seconds)
+@save_interval 10000  # Interval for saving state to the database (10 seconds)
+```

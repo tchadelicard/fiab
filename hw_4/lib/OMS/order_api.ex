@@ -26,53 +26,79 @@ defmodule ImtOrder.API do
 #  end
 
   # New version with multithreaded file reading
-  get "/aggregate-stats/:product" do
-    chuncked_res = Path.wildcard("data/stat_*")
-    |> Enum.map(fn file_name ->
-      current_pid = self()
-      spawn_link(fn ->
-        [sold_qty, price] = ImtOrder.StatsAsDb.find_bisec(file_name,product)
-        {price_int, ""} = Integer.parse(price)
-        {sold_qty_int, ""} = Integer.parse(sold_qty)
-        send(current_pid, %{qty: sold_qty_int, price: price_int})
-      end)
-    end)
-    |> Enum.map(fn _ ->
-      receive do
-        msg -> msg
-      after
-        5000 -> %{qty: 0, price: 0}
-      end
-    end)
-    |> Enum.chunk_every(10)
+#  get "/aggregate-stats/:product" do
+#    chuncked_res = Path.wildcard("data/stat_*")
+#    |> Enum.map(fn file_name ->
+#      current_pid = self()
+#      spawn_link(fn ->
+#        [sold_qty, price] = ImtOrder.StatsAsDb.find_bisec(file_name,product)
+#        {price_int, ""} = Integer.parse(price)
+#        {sold_qty_int, ""} = Integer.parse(sold_qty)
+#        send(current_pid, %{qty: sold_qty_int, price: price_int})
+#      end)
+#    end)
+#    |> Enum.map(fn _ ->
+#      receive do
+#        msg -> msg
+#      after
+#        5000 -> %{qty: 0, price: 0}
+#      end
+#    end)
+#    |> Enum.chunk_every(10)
+#
+#    res = Enum.map(chuncked_res, fn chunk ->
+#      current_pid = self()
+#      spawn_link(fn ->
+#        res = Enum.reduce(chunk, %{ca: 0, total_qty: 0}, fn %{qty: sold_qty, price: price}, acc ->
+#          %{acc|
+#            ca: acc.ca + sold_qty * price,
+#            total_qty: acc.total_qty + sold_qty
+#          }
+#        end)
+#        send(current_pid, res)
+#      end)
+#    end)
+#    |> Enum.map(fn _ ->
+#      receive do
+#        msg -> msg
+#      after
+#        5000 -> %{ca: 0, total_qty: 0}
+#      end
+#    end)
+#    |> Enum.reduce(%{ca: 0, total_qty: 0}, fn %{ca: ca, total_qty: total_qty}, acc ->
+#      %{acc|
+#        ca: acc.ca + ca,
+#        total_qty: acc.total_qty + total_qty
+#      }
+#    end)
+#    res = Map.put(res, :mean_price, res.ca / (if res.total_qty == 0, do: 1, else: res.total_qty))
+#    conn |> send_resp(200, Poison.encode!(res)) |> halt()
+#  end
 
-    res = Enum.map(chuncked_res, fn chunk ->
-      current_pid = self()
-      spawn_link(fn ->
-        res = Enum.reduce(chunk, %{ca: 0, total_qty: 0}, fn %{qty: sold_qty, price: price}, acc ->
-          %{acc|
+  # New version that uses the ImtOrder.StatsToDb module
+  get "/aggregate-stats/:product" do
+    product = String.to_integer(conn.params["product"])
+
+    case ImtOrder.StatsToDb.get(product) do
+      {:ok, stats} ->
+        res = Enum.reduce(stats, %{ca: 0, total_qty: 0}, fn %{qty: sold_qty, price: price}, acc ->
+          %{acc |
             ca: acc.ca + sold_qty * price,
             total_qty: acc.total_qty + sold_qty
           }
         end)
-        send(current_pid, res)
-      end)
-    end)
-    |> Enum.map(fn _ ->
-      receive do
-        msg -> msg
-      after
-        5000 -> %{ca: 0, total_qty: 0}
-      end
-    end)
-    |> Enum.reduce(%{ca: 0, total_qty: 0}, fn %{ca: ca, total_qty: total_qty}, acc ->
-      %{acc|
-        ca: acc.ca + ca,
-        total_qty: acc.total_qty + total_qty
-      }
-    end)
-    res = Map.put(res, :mean_price, res.ca / (if res.total_qty == 0, do: 1, else: res.total_qty))
-    conn |> send_resp(200, Poison.encode!(res)) |> halt()
+
+        res = Map.put(res, :mean_price, res.ca / (if res.total_qty == 0, do: 1, else: res.total_qty))
+
+        conn
+        |> send_resp(200, Poison.encode!(res))
+        |> halt()
+
+      {:error, error} ->
+        conn
+        |> send_resp(200, Poison.encode!(%{:mean_price => 0, :total_qty => 0, :ca => 0}))
+        |> halt()
+    end
   end
 
   put "/stocks" do
