@@ -14,7 +14,7 @@ The **ImtOrder Statistics to Database Service** is a GenServer to manage product
 
 ## Usage
 
-You can start the application and interact with the GenServer as follows:
+You can start and interact with the GenServer as follows:
 
 1. **Start the server**:
 
@@ -49,6 +49,12 @@ You can start the application and interact with the GenServer as follows:
    {:ok, state} = ImtOrder.StatsToDb.dump()
    ```
 
+You can also launch a simulation with the `ImtOrder.StatsToDb` GenServer by using the following command:
+
+```bash
+make run
+```
+
 ## Configuration
 
 You can configure the scanning and saving intervals in the `ImtOrder.StatsToDb.Server` module by modifying the values for `@scan_interval` and `@save_interval`. These are set in milliseconds:
@@ -57,3 +63,15 @@ You can configure the scanning and saving intervals in the `ImtOrder.StatsToDb.S
 @scan_interval 5000   # Interval for scanning files (5 seconds)
 @save_interval 10000  # Interval for saving state to the database (10 seconds)
 ```
+
+# Results
+
+Before using the `ImtOrder.StatsToDb` GenServer:
+
+![Before using the GenServer](before_stats_to_db.png)
+
+Results with the `ImtOrder.StatsToDb` GenServer:
+
+![After using the GenServer](with_stats_to_db.png)
+
+The spikes on the second graph seem to come from the GenServer saving the statistics to the MicroDb.
