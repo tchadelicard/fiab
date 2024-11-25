@@ -1,0 +1,129 @@
+# IMT TAF Fiabilité : Test de charge
+
+```elixir
+# Dependencies
+Mix.install([
+  {:kino, "~> 0.6.2"},
+  {:kino_vega_lite, "~> 0.1.0"},
+  {:nimble_csv, "~> 1.2"},
+  {:explorer, "~> 0.3.1"}
+])
+
+# Data
+NimbleCSV.define(DataParser, [])
+alias VegaLite, as: Vl
+alias Explorer.DataFrame
+alias Explorer.Series
+```
+
+## Analyse des données
+
+### Table
+
+```elixir
+df =
+  DataFrame.from_csv!("data/stats.csv", header: false, parse_dates: true)
+  |> DataFrame.rename(["id", "ts", "path", "latency", "res", "res_desc"])
+
+ts = df["ts"] |> Series.transform(&"#{DateTime.from_unix!(&1, :millisecond)}")
+grouppath = df["path"] |> Series.transform(&"/#{&1 |> String.split("/") |> Enum.at(1)}")
+
+df =
+  df
+  |> DataFrame.mutate([{"ts", ts}])
+  |> DataFrame.mutate([{"grouppath", grouppath}])
+
+DataFrame.table(df)
+```
+
+### Analyse de latences par route
+
+```elixir
+df
+|> DataFrame.group_by("grouppath")
+|> DataFrame.summarise_with(
+  &[
+    {"min", Series.min(&1["latency"])},
+    {"max", Series.max(&1["latency"])},
+    {"mean", Series.mean(&1["latency"])},
+    {"median", Series.median(&1["latency"])}
+  ]
+)
+|> DataFrame.table()
+```
+
+## Visualisation
+
+### Latence
+
+```elixir
+data =
+  "data/stats.csv"
+  |> File.stream!()
+  |> DataParser.parse_stream(skip_headers: false)
+  |> Stream.zip(Stream.iterate(0, &(&1 + 1)))
+  |> Enum.map(fn {[id, ts, path, latency, res, res_desc], pos} ->
+    %{
+      pos: pos,
+      id: id,
+      ts: ts,
+      path: path,
+      latency: String.to_integer(latency),
+      res: res,
+      res_desc: res_desc
+    }
+  end)
+
+encode_color = fn vl ->
+  Vl.encode_field(vl, :color, "lat_nom",
+    type: :nominal,
+    title: "Latency",
+    scale: %{
+      domain: ["failed", "t<20ms", "20ms<t<40ms", "40ms<t<200ms", "t>200ms"],
+      range: ["#ff0000", "#4eac5b", "#608ece", "#fffc54", "#ef7b36"]
+    }
+  )
+end
+
+vl_data =
+  Vl.new(width: 700)
+  |> Vl.data_from_values(data)
+  |> Vl.transform(
+    calculate:
+      "datum.res == \"ko\" ? \"failed\" : datum.latency < 20 ? \"t<20ms\" : datum.latency < 40 ? \"20ms<t<40ms\" : datum.latency < 200 ? \"40ms<t<200ms\" : \"t>200ms\"",
+    as: "lat_nom"
+  )
+  |> Vl.transform(calculate: "join(split(datum.path, \"/\", 2), \"/\")", as: "grouppath")
+
+vl_data
+|> encode_color.()
+|> Vl.encode_field(:x, "lat_nom",
+  sort: ["failed", "t<20ms", "20ms<t<40ms", "40ms<t<200ms", "t>200ms"],
+  title: "Latency"
+)
+|> Vl.encode_field(:y, "id", aggregate: :count)
+|> Vl.mark(:bar)
+```
+
+```elixir
+vl_data
+|> encode_color.()
+|> Vl.mark(:arc)
+|> Vl.encode_field(:theta, "id", aggregate: :count)
+```
+
+```elixir
+vl_data
+|> Vl.mark(:line, point: true)
+|> Vl.encode_field(:color, "grouppath", type: :nominal)
+|> Vl.encode_field(:y, "latency", type: :quantitative)
+|> Vl.encode_field(:x, "pos")
+```
+
+```elixir
+vl_data
+|> Vl.mark(:boxplot, median: %{color: :white}, ticks: true)
+|> Vl.encode_field(:color, "grouppath", type: :nominal, legend: nil)
+|> Vl.encode_field(:x, "grouppath", type: :nominal)
+|> Vl.encode_field(:y, "latency", type: :quantitative)
+```

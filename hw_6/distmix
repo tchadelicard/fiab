@@ -1,0 +1,265 @@
+#!/usr/bin/env elixir
+############# USAGE ###################
+# Usage: simply put this file in your PATH... then :
+# - create a specific config.exs in your project to overwrite some config.exs conf in a distributed context : config/distconfig.exs ,
+#   for example:
+#     [ my_app: [http: for {ip,port}<-Application.get_env(:my_app,:http) do {ip,DistMix.add_nodei(port)} end],
+#       simple_ha_state: [nodes: Application.get_env(:distmix,:nodes),ring_mod: DistributedRing]]
+# - use `distmix` instead of `mix` in every usage, with an additional parameter for number of nodes
+#   > iex -S distmix 8
+#   > iex -S distmix 8 mytask --my-opt
+#   > distmix 8 run --no-halt
+#   > distmix 8 mytask --my-opt
+# - the names of the nodes are "#{app_name}_#{i}@127.0.0.1", i starts with 1.
+#   the name of the main console node is #{app_name}_launcher@127.0.0.1
+# - All IO (stdin / stdout / stderr) of the child nodes are forwarded to the
+#   main console used to launch `distmix`
+# - if you kill the main console node, all the child nodes die with it...
+#
+#   when launched with a shell (iex -S distmix), the new shell is
+#   - already attached to every launched nodes remsh... to access them, just "CTRL-G"
+#     + "c 2" "c 3"... the number is the index of the node + 1
+#   - by default a dedicated shell which evaluates every line on every nodes !
+####################################@
+
+## DistMix.start is the standard Mix.CLI.main task launcher... but meant to be in a slave node
+# that means, like Mix.CLI.main, it :
+# - adds additional local paths ~/.mix and ~/.hex...
+# - starts Mix and load current project conf `mix.exs` into it
+# - starts `loadconfig` task : load environments from config/config.exs
+# - starts task on command line argument or `project.default_task` (run->app.start)
+## Additionally, DistMix does some customization for usage as a slave node :
+# - forward standard error to main console output
+# - load an additional mix config file "distconfig.exs" after "config.exs" (it can modify config.exs configs)
+#    the `config/distconfig.exs` can typically use `DistMix.nodei`,
+#    `DistMix.add_nodei/1`, `Application.get_env(:distmix,:nodes)` to change
+#    confs according to current node() index or total node list.
+## This `distmix` script is an alternative to the standard `mix` executable
+# it actually does the same thing (with the 2 small additions above), but in
+# slave nodes. first argument becomes the number of slave nodes - others stay the same.
+{:module,distmix_mod,distmix_bin,_} = defmodule DistMix do
+  @default_task_run "run"
+  def start(args) do
+    # We need to see stdout and stderr on main console for each child node...
+    # :slave.start_link does that making the main console the main group_leader for slave node.
+    # PROBLEM : we need also to see stderr!... SOLUTION : replace :standard_error
+    # (`puts :stderr`) process by current group leader (main console). As this pid is not on the same node
+    # you cannot register it as `:standard_error`... so create a local process only to forward ioreq
+    Process.unregister(:standard_error)
+    Process.register(spawn(fn-> forward_ioreq(Process.group_leader()) end),:standard_error)
+
+    Mix.start # start mix...
+    # append Local mix and archives paths (~/.mix , ~/.hex)
+    Mix.Local.append_archives()
+    Mix.Local.append_paths()
+    # load common user mix config ~/.mix/config.exs
+    config_path = if Keyword.has_key?(Mix.Utils.__info__(:functions), :mix_config) do
+      Path.join(Mix.Utils.mix_config(), "config.exs")
+    else
+      Path.join(Mix.Utils.mix_home(), "config.exs")
+    end
+    if File.regular?(config_path) do Mix.Task.run("loadconfig", [config_path]) end
+    # load mix task conf || project || mix.exs
+    mix_file = System.get_env("MIX_EXS") || "mix.exs"
+    if File.regular?(mix_file) do Code.compile_file(mix_file) end
+    # load standard conf (project :config_path or config/config.exs)
+    Mix.Task.run("loadconfig")
+    # load conf from distconfig file ! (which as the particularity to be loaded after mix conf is already loaded)
+    if File.regular?("config/distconfig.exs") do Mix.Task.run("loadconfig", ["config/distconfig.exs"]) end
+    {task,args} = case args do
+      [h|t]-> {h,t}
+      []   -> {(Mix.Project.config[:default_task] || @default_task_run), []}
+    end
+    Application.put_env(:elixir,:ansi_enabled,true) # Enable ANSI colors
+    Mix.Task.run(task, args)
+  end
+  def forward_ioreq(forward_to) do
+    receive do
+      ioreq when elem(ioreq,0) == :io_request ->
+        send(forward_to,ioreq)
+        forward_ioreq(forward_to)
+      _other -> forward_ioreq(forward_to)
+    end
+  end
+  def nodei do
+    [_,node_idx] = Regex.run(~r/([0-9]+)@/,"#{node()}")
+    String.to_integer(node_idx)
+  end
+  def add_nodei(n, opts \\ [])
+  def add_nodei(n, _opts) when is_integer(n) do n+nodei() end
+  def add_nodei(str, opts) when is_binary(str) do
+    regex = if opts[:first_int] do ~r/^([^0-9]*)([0-9]+)(.*)$/ else ~r/^(.*)([0-9]+)([^0-9]*)$/ end
+    case Regex.run(regex,str) do
+      nil-> str
+      [_,head,num,trail] -> "#{head}#{String.to_integer(num)+nodei()}#{trail}"
+    end
+  end
+end
+
+# The custom shell which allows you to dispatch every command line on every nodes
+defmodule DistIEx do
+  defp io_error(result) do IO.puts(:stdio, IEx.color(:eval_error, result)) end
+
+  def start() do
+    spawn(fn ->
+      gl = Process.group_leader()
+      [n|_] = Application.get_env(:distmix,:nodes)
+      _ = :io.setopts(gl, expand_fun: fn e ->
+        case :rpc.call(n, IEx.Autocomplete, :expand, [e]) do
+          {:badrpc, _} -> {:no, '', []}
+          r -> r
+        end
+      end)
+      :io.setopts(gl, binary: true, encoding: :unicode)
+      start_loop()
+    end)
+  end
+
+  def start_loop() do
+    Process.flag(:trap_exit, true)
+    IO.puts("Distributed Interactive Elixir (#{System.version()})")
+    s = %{__struct__: IEx.State,  buffer: "",cache: '',counter: 1, evals: [], nodes: Application.get_env(:distmix,:nodes)}
+    loop(start_evaluators(s))
+  end
+
+  def start_evaluators(s) do
+    [{first_eval,_}|_] = evals = for n<-s.nodes do
+      pid = :rpc.call(n,:proc_lib,:start,[IEx.Evaluator, :init, [:ack, self(), Process.group_leader(), []]])
+      {pid,Process.monitor(pid)}
+    end
+    Process.put(:evaluator, first_eval)
+    %{s|evals: evals}
+  end
+
+  def stop_evaluators(%{evals: evals}) do
+    for {eval,mon}<-evals do
+      Process.demonitor(mon,[:flush])
+      send(eval,{:done, self()})
+    end
+  end
+
+  def rerun(state, input) do
+    if input do Process.exit(input, :kill) end
+    IO.puts("")
+    stop_evaluators(state)
+    start_loop()
+  end
+
+  def loop(state) do
+    prefix = if state.cache != [], do: "....", else: "mult"
+    self_pid = self()
+    wait_input(state, spawn(fn ->
+      prompt = apply(IEx.Config,:alive_prompt, [])
+               |> String.replace("%counter", to_string(state.counter))
+               |> String.replace("%prefix", prefix)
+               |> String.replace("%node", "1..#{length(state.nodes)}")
+      send(self_pid,{:input, self(), IO.gets(:stdio, prompt <> " ")})
+    end))
+  end
+
+  defp wait_input(state, input) do
+    receive do
+      {:input, ^input, code} when is_binary(code) ->
+        for {eval,_}<-state.evals do
+          send(eval, {:eval, self(), code, state})
+        end
+        wait_eval(state,length(state.nodes))
+      {:input, ^input, {:error, :interrupted}} ->
+        io_error("** (EXIT) interrupted")
+        loop(%{state | cache: ''})
+      {:input, ^input, :eof} -> stop_evaluators(state)
+      {:input, ^input, {:error, :terminated}} -> stop_evaluators(state)
+      msg -> # something happened which is not an input
+        handle_take_over(msg, state, input, fn state ->
+          wait_input(state, input)
+        end)
+    end
+  end
+
+  def wait_eval(state, 0) do loop(state) end
+  def wait_eval(state, wait_num) do
+    receive do
+      {:evaled, _eval, new_state} -> #only last result updates state counter and cache
+        wait_eval(if wait_num == 1 do new_state else state end, wait_num - 1)
+      msg -> # something happened which is not an eval result
+        handle_take_over(msg, state, nil, fn state ->
+          wait_eval(state, wait_num)
+        end)
+    end
+  end
+
+  # User did ^G while one evaluator is still busy or stuck : kill all of them
+  defp handle_take_over({:EXIT, _pid, :interrupt},state,input,_callback) do
+    if input do Process.exit(input, :kill) end
+    io_error("** (EXIT) interrupted")
+    for {eval,mon}<-state.evals do
+      Process.exit(eval, :kill)
+      Process.demonitor(mon, [:flush])
+    end
+    loop(start_evaluators(%{state | cache: ''}))
+  end
+
+  # if one evaluator is down, just kill them old and rerun... log error only if non-normal reason
+  defp handle_take_over({:DOWN,_,:process,_,:normal},state,input,_callback) do
+    rerun(state,input)
+  end
+  defp handle_take_over({:DOWN,_,:process,eval,reason},state,input,_callback) do
+    try do
+      io_error("** (EXIT from #{inspect(eval)}) shell process exited with reason: #{Exception.format_exit(reason)}")
+    catch
+      type, detail ->
+        io_error("** (IEx.Error) #{type} when printing EXIT message: #{inspect(detail)}")
+    end
+    rerun(state,input)
+  end
+
+  defp handle_take_over(_,state,_input,callback) do
+    callback.(state)
+  end
+end
+
+## Retrieve current app name through mix project load : the name will be used for node names
+Mix.start
+Code.compile_file(System.get_env("MIX_EXS") || "mix.exs")
+app = Mix.Project.config[:app]
+
+## start distributed deps for current node in ordre to create and communicate with slave nodes
+{:ok,_} = :erl_boot_server.start([{127,0,0,1}])
+{:ok,_} = :net_kernel.start([:"#{app}_launcher@127.0.0.1"])
+
+## Each node is appname_1@127.0.0.1 appname_2@127.0.0.1 etc. according to cmd first arg
+[node_count|args] = System.argv()
+nodes = for i<-1..String.to_integer(node_count) do :"#{app}_#{i}@127.0.0.1" end
+Application.put_env(:distmix,:nodes,nodes)
+
+## For each node, start it, load DistMix lib, start targeted mix task through DistMix.start
+for n<-nodes do
+  [name,_] = String.split("#{n}","@")
+  {:ok,_} = :slave.start('127.0.0.1','#{name}','')
+  :ok = :rpc.call(n,:code,:add_paths,[:code.get_path()]) # for child node to have same Elixir lib paths
+  :ok = :rpc.call(n,Application,:put_env,[:distmix,:nodes,nodes]) # dedicated conf with all nodes started by distmix
+  # load and start distmix... distmix is only a standard mix task launcher
+  {:module,_} = :rpc.call(n,:code,:load_binary,[distmix_mod,'distmix',distmix_bin])
+  :ok = :rpc.call(n,DistMix,:start,[List.delete(args,"--no-halt")])
+end
+## Handling no-halt option : remove it for child nodes, if present do not halt the master node
+if "--no-halt" in args do System.no_halt(true) end
+
+case Process.info(Process.group_leader(),:initial_call) do
+  # in case we are in a standard shell manager (group.erl group leader) : start remote shells to childs
+  {:initial_call,{:group,_,_}}->
+    # as it is impossible to add a shell to current group / user_drv programmatically...
+    # we will simulate usr_drv port messages to drv (stdin simulation)
+    drv = Process.whereis(:user_drv)
+    {:links,drv_links} = Process.info(drv,:links)
+    drv_port = Enum.find(drv_links,&is_port/1)
+    send(drv,{drv_port,{:data,[7]}}) # User switch command
+    for n<-nodes do # connect to one remote shell per node
+      send(drv,{drv_port,{:data,'r \'#{n}\' \'Elixir.IEx\'\n'}})
+    end
+    # start the "distributed iex" defined in this file : eval every lines in every nodes
+    send(drv,{drv_port,{:data,'s \'Elixir.DistIEx\'\n'}})
+    send(drv,{drv_port,{:data,'j\n'}})
+    send(drv,{drv_port,{:data,'c\n\n'}})
+  _-> :not_in_a_shell
+end
