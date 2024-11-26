@@ -24,6 +24,7 @@ defmodule ImtSim.WMS.Stocks do
   use GenServer
   require Logger
 
+  @url "http://localhost:9090"
   @timeout :timer.seconds(Application.get_env(:imt_order, :back)[:stocks_file_interval]) # Generate file every X sec
 
   def start_link(_) do GenServer.start_link(__MODULE__, [], name: __MODULE__) end
@@ -47,7 +48,7 @@ defmodule ImtSim.WMS.Stocks do
         end)
       end)
 
-    oms_stocks_api = 'http://localhost:9092/stocks'
+    oms_stocks_api = '#{@url}/stocks'
     Logger.info("[WMS - Simulator] stock file sent to the OMS")
     :httpc.request(:put, {oms_stocks_api, [], 'text/csv', IO.iodata_to_binary(lines)}, [], [])
   end

@@ -135,8 +135,8 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - The updated state with the new list of nodes.
   """
   def update_nodes(state) do
-    nodes = Enum.count(Application.get_env(:distmix, :nodes)) - 4
-    nodes = for i <- 0..nodes, do: :"imt_order_#{3+i}@127.0.0.1"
+    nodes = Enum.count(Application.get_env(:distmix, :nodes)) - 5
+    nodes = for i <- 0..nodes, do: :"imt_order_#{4+i}@127.0.0.1"
     state |> Map.put(:nodes, nodes)
   end
 

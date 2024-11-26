@@ -9,7 +9,7 @@ defmodule ImtSandbox.App do
     childs = case Application.fetch_env!(:imt_order, :app_type) do
       :front -> [ImtSim.EComFront]
       :back -> [ImtSim.WMS]
-      #:lb -> [LoadBalancer]
+      :lb -> [LoadBalancer]
       :statsdb -> [ImtOrder.Stats]
       :sim-> [ImtOrder.App]
     end

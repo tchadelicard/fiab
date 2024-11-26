@@ -220,7 +220,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
   ## Returns
   - `{:ok, message, order}` on success.
   """
-  @url "http://localhost:9090"
+  @url "http://localhost:9091"
   def process_order(order) do
     selected_store = Enum.find(1..200, fn store_id ->
       Enum.all?(order["products"], fn %{"id" => prod_id, "quantity" => q} ->

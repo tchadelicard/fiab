@@ -8,14 +8,15 @@ defmodule ImtOrder.API do
   plug :match
   plug :dispatch
 
-  @stats_url "http://localhost:9091"
+  @stats_url "http://localhost:9092"
 
   get "/aggregate-stats/:product" do
     product = String.to_integer(conn.params["product"])
 
     case :httpc.request("#{@stats_url}/stats/#{product}") do
-      {:ok, stats} ->
-        res = Enum.reduce(stats, %{ca: 0, total_qty: 0}, fn %{qty: sold_qty, price: price}, acc ->
+      {:ok, {{_, 200, _}, _, body}} ->
+        stats = Poison.decode!(body)
+        res = Enum.reduce(stats, %{ca: 0, total_qty: 0}, fn %{"qty" => sold_qty, "price" => price}, acc ->
           %{acc |
             ca: acc.ca + sold_qty * price,
             total_qty: acc.total_qty + sold_qty
@@ -27,7 +28,10 @@ defmodule ImtOrder.API do
         conn
         |> send_resp(200, Poison.encode!(res))
         |> halt()
-
+      {:ok, {{_, code, _}, _, _}} ->
+        conn
+        |> send_resp(code, Poison.encode!(%{:mean_price => 0, :total_qty => 0, :ca => 0}))
+        |> halt()
       {:error, _error} ->
         conn
         |> send_resp(200, Poison.encode!(%{:mean_price => 0, :total_qty => 0, :ca => 0}))

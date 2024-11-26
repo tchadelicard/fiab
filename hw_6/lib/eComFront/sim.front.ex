@@ -55,7 +55,7 @@ defmodule ReqSender do
 end
 
 defmodule Req do
-  @url 'http://localhost:9092/'
+  @url 'http://localhost:9090/'
 
   def send_request(id, path, logfile) do
     ts = :erlang.system_time(:milli_seconds)

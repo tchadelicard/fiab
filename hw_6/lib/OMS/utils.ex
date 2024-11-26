@@ -18,7 +18,7 @@ defmodule ImtOrder.Utils do
       false
   """
   def is_console() do
-    DistMix.nodei() == 3
+    DistMix.nodei() == 4
   end
 
   @doc """
