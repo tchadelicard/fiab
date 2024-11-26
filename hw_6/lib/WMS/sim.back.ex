@@ -24,7 +24,7 @@ defmodule ImtSim.WMS.Stocks do
   use GenServer
   require Logger
 
-  @timeout :timer.seconds(1) # Generate file every 15 sec
+  @timeout :timer.seconds(Application.get_env(:imt_order, :back)[:stocks_file_interval]) # Generate file every X sec
 
   def start_link(_) do GenServer.start_link(__MODULE__, [], name: __MODULE__) end
   def init([]) do {:ok, [], @timeout} end
@@ -35,9 +35,9 @@ defmodule ImtSim.WMS.Stocks do
   end
 
   def gen_stock_file() do
-    # generate stocks for 10_000 products in 200 stores : IDPROD,IDSTORE,QUANTITY
-    nb_products = 40_000
-    nb_stores = 200
+    # generate stocks for X products in Y stores : IDPROD,IDSTORE,QUANTITY
+    nb_products = Application.get_env(:imt_order, :common)[:nb_products]
+    nb_stores = Application.get_env(:imt_order, :common)[:nb_stores]
 
     lines =
       Enum.flat_map(1..nb_products, fn product_id ->
@@ -57,18 +57,19 @@ defmodule ImtSim.WMS.Stats do
   use GenServer
   require Logger
 
-  @timeout :timer.seconds(1) # Generate file every 10 sec
+  @timeout :timer.seconds(Application.get_env(:imt_order, :back)[:stats_file_interval]) # Generate file every X sec
 
   def start_link(_) do GenServer.start_link(__MODULE__, [], name: __MODULE__) end
   def init([]) do {:ok, [], @timeout} end
   def handle_info(:timeout, []) do gen_stat_file(); {:noreply, [], @timeout} end
 
   def gen_stat_file() do
-    # generate 10_000 product line : IDPROD,NBVENTE,PRIXVENTE
-    nb_products = 40_000
+    # generate X product line : IDPROD,NBVENTE,PRIXVENTE
+    nb_products = Application.get_env(:imt_order, :common)[:nb_products]
 
     file =
-      Enum.map(1..nb_products, fn product_id ->
+      1..nb_products
+      |> Enum.map(fn product_id ->
         "#{product_id},#{:rand.uniform(30)},#{:rand.uniform(30)}\n"
       end)
 

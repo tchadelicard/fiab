@@ -6,7 +6,8 @@ defmodule ReqSender do
   def start_link(opts) do GenServer.start_link(__MODULE__, opts, name: __MODULE__) end
 
   def init(opts) do
-    Process.send_after(self(), :stop, opts[:duration])
+    duration = Application.get_env(:imt_order, :front)[:duration]
+    Process.send_after(self(), :stop, :timer.seconds(duration))
     Process.send_after(self(), :send_req, 0)
 
     todo =
@@ -16,12 +17,11 @@ defmodule ReqSender do
 
     {:ok,
       %{id: 0, c: 0,
-      parent: opts[:parent], running: true,
-      req_interval: div(1000, opts[:rate] || 10),
+      running: true,
       todo: todo}}
   end
 
-  def handle_info(:send_req, %{running: false} = state) do {:noreply, state} end
+  def handle_info(:send_req, %{running: false} = state), do: {:noreply, state}
   def handle_info(:send_req, %{running: true, id: id} = state) do
     sender = self()
     fun = Enum.random(state.todo)
@@ -31,29 +31,40 @@ defmodule ReqSender do
       send(sender,:req_done)
     end)
 
-    Process.send_after(self(), :send_req, state.req_interval)
+    req_interval = div(1000, Application.get_env(:imt_order, :front)[:rate])
+    Process.send_after(sender, :send_req, req_interval)
 
     {:noreply, %{state | c: state.c + 1, id: state.id + 1}}
   end
-  def handle_info(:req_done, state) do {:noreply, maybe_end(%{state | c: state.c - 1})} end
-  def handle_info(:stop, state) do {:noreply, maybe_end(%{state | running: false})} end
+  def handle_info(:req_done, state) do
+    {:noreply, maybe_end(%{state | c: state.c - 1})}
+  end
+  def handle_info(:stop, state) do
+    {:noreply, maybe_end(%{state | running: false})}
+  end
 
-  def maybe_end(%{running: false, c: 0, parent: _parent} = state) do :init.stop() ; state end
-  def maybe_end(%{c: c} = state) when rem(c, 10000) == 0 do IO.write(:stderr, ".") ; state end
-  def maybe_end(state) do state end
+  def maybe_end(%{running: false, c: 0} = state) do
+    :init.stop()
+    state
+  end
+  def maybe_end(%{c: c} = state) when c == 0 do
+    IO.write(:stderr, ".")
+    state
+  end
+  def maybe_end(state), do: state
 end
 
 defmodule Req do
   @url 'http://localhost:9092/'
 
-  def get_req_ko400(id, path, logfile) do
+  def send_request(id, path, logfile) do
     ts = :erlang.system_time(:milli_seconds)
 
     {time,{ok?,other}} = :timer.tc(fn ->
       case :httpc.request('#{@url}#{path}') do
-        {:ok,{{_,code,_},_,_}} when code < 400-> {:ok,code}
-        {:ok,{{_,code,_},_,_}}-> {:ko,code}
-        {:error,reason}-> {:ko,"#{inspect reason}"}
+        {:ok,{{_,code,_},_,_}} when code < 400 -> {:ok,code}
+        {:ok,{{_,code,_},_,_}} -> {:ko,code}
+        {:error,reason} -> {:ko,"#{inspect reason}"}
       end
     end)
 
@@ -61,12 +72,13 @@ defmodule Req do
   end
 
   def post_random_order(req_id, logfile) do
+    nb_products = Application.get_env(:imt_order, :common)[:nb_products]
     order =
       Poison.encode!(%{
         id: "#{req_id}",
         products: [
-          %{id: :rand.uniform(1000), quantity: :rand.uniform(5)},
-          %{id: :rand.uniform(1000), quantity: :rand.uniform(5)}
+          %{id: :rand.uniform(nb_products), quantity: :rand.uniform(5)},
+          %{id: :rand.uniform(nb_products), quantity: :rand.uniform(5)}
         ]
       })
 
@@ -86,25 +98,25 @@ defmodule Req do
     end)
 
     Task.start(fn ->
-      :timer.sleep(2_000 + (:rand.uniform(16) * 125)) # le paiement arrive après la commande
+      :timer.sleep(2_000 + (:rand.uniform(16) * 125)) # le paiement arrive après la commande (entre 2 & 4s après)
       post_payment(req_id, logfile)
     end)
   end
 
   def post_payment(order_id, logfile) do
-    transaction = Poison.encode!(%{transaction_id: :rand.uniform(10_000)})
+    transaction = Poison.encode!(%{transaction_id: :rand.uniform(100_000_000)})
     ts = :erlang.system_time(:milli_seconds)
 
     {time, {ok?, other}} =
       :timer.tc(fn ->
         case :httpc.request(:post, {'#{@url}/order/#{order_id}/payment-callback', [], 'application/json', transaction}, [], []) do
           {:ok, {{_, code, _}, _, _}} when code < 400 -> {:ok, code}
-          {:ok, {{_, code, _}, _, _}}-> {:ko, code}
+          {:ok, {{_, code, _}, _, _}} -> {:ko, code}
           {:error, reason} -> {:ko, "#{inspect reason}"}
         end
       end)
 
-    IO.write(logfile, "#{900000000 + order_id},#{ts},/order/#{order_id}/payment-callback',#{div(time, 1000)},#{ok?},#{other}\n")
+    IO.write(logfile, "#{900000000 + order_id},#{ts},/order/#{order_id}/payment-callback,#{div(time, 1000)},#{ok?},#{other}\n")
   end
 end
 
@@ -118,6 +130,8 @@ defmodule ImtSim.EComFront do
   @impl true
   def init(_) do
     logfile = File.open!("data/stats.csv",[:write])
+    nb_products = Application.get_env(:imt_order, :common)[:nb_products]
+    weights = Application.get_env(:imt_order, :front)[:weights]
 
     children = [
       {
@@ -126,8 +140,8 @@ defmodule ImtSim.EComFront do
         rate: 10,
         duration: :timer.seconds(30),
         todo: [
-          {0, &Req.get_req_ko400(&1, "/aggregate-stats/#{:rand.uniform(40000)}", logfile)},
-          {12, &Req.post_random_order(&1, logfile)},
+          {weights[:stats], &Req.send_request(&1, "/aggregate-stats/#{:rand.uniform(nb_products)}", logfile)},
+          {weights[:order], &Req.post_random_order(&1, logfile)},
         ]
       }
     ]

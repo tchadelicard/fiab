@@ -195,7 +195,8 @@ defmodule ImtOrder.StatsToDb.Impl do
   By default, it loads stats for 10,000 products but this can be configured by passing
   a different `nb_products` value.
   """
-  def load_db(nb_products \\ 40_000) do
+  def load_db() do
+    nb_products = Application.get_env(:imt_order, :common)[:nb_products]
     Enum.reduce(1..nb_products, %{}, fn product_id, acc ->
       case MicroDb.HashTable.get("stats", product_id) do
         nil -> acc
