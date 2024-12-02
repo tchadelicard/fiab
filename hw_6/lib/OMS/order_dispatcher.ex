@@ -18,7 +18,11 @@ defmodule ImtOrder.OrderDispatcher do
   - `{:error, reason}` if there was an issue starting the transactor.
   """
   def start(order_id) do
-    GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id})
+    GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id}, 20_000)
+  end
+
+  def start(node, order_id) do
+    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id}, 20_000)
   end
 end
 
@@ -47,14 +51,13 @@ defmodule ImtOrder.OrderDispatcher.Server do
 
   The initial state includes:
   - `nodes`: A list of available nodes.
-  - `transactors`: A map of order IDs to their respective nodes.
   - `index`: An index counter for internal tracking.
 
   ## Returns
   - `{:ok, state}` with the initial state.
   """
   def init(_) do
-    state = %{nodes: [], transactors: %{}, index: 0}
+    state = %{nodes: []}
     {:ok, state |> Impl.update_nodes()}
   end
 
@@ -81,6 +84,13 @@ defmodule ImtOrder.OrderDispatcher.Server do
         {:reply, {:error, "Failed to start transactor"}, updated_state}
     end
   end
+
+  def handle_call({:start_transactor, order_id}, _from, state) do
+    case ImtOrder.OrderTransactor.start(order_id) do
+      {:ok, _} -> {:reply, :ok, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 end
 
 defmodule ImtOrder.OrderDispatcher.Impl do
@@ -91,7 +101,7 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   and starting transactors on appropriate nodes.
   """
 
-  alias ImtOrder.OrderManager
+  alias ImtOrder.OrderDispatcher
 
   @doc """
   Hashes the given `order_id` using Erlang's `phash2` function.
@@ -157,25 +167,23 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   def start_transactor(state, order_id) do
     state = state |> update_nodes()
 
-    case state.transactors |> Map.get(order_id) do
-      nil ->
-        node = state |> get_node(order_id)
+    node = state |> get_node(order_id)
 
-        case OrderManager.start(node, order_id) do
-          :ok ->
-            state =
-              state
-              |> Map.put(:index, state.index + 1)
-              |> Map.put(:transactors, Map.put(state.transactors, order_id, node))
-
+    case node == Node.self() do
+      true ->
+        case ImtOrder.OrderTransactor.start(order_id) do
+          {:ok, _} ->
             {:ok, node, state}
-
           {:error, _} ->
             {:error, state}
         end
-
-      node ->
-        {:ok, node, state}
+      false ->
+        case OrderDispatcher.start(node, order_id) do
+          :ok ->
+            {:ok, node, state}
+          {:error, _} ->
+            {:error, state}
+        end
     end
   end
 end
