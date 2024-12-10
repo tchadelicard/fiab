@@ -136,9 +136,6 @@ defmodule ImtSim.EComFront do
     children = [
       {
         ReqSender,
-        parent: self(),
-        rate: 10,
-        duration: :timer.seconds(30),
         todo: [
           {weights[:stats], &Req.send_request(&1, "/aggregate-stats/#{:rand.uniform(nb_products)}", logfile)},
           {weights[:order], &Req.post_random_order(&1, logfile)},
