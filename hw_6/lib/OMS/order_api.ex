@@ -61,14 +61,14 @@ defmodule ImtOrder.API do
       {:ok, node} ->
         case OrderTransactor.new(node, order) do
           :ok ->
-            Logger.info("Order #{order["id"]} created")
+            Logger.info("[OrderAPI] Order #{order["id"]} created")
             conn |> send_resp(200, "") |> halt()
           err ->
-            Logger.error("[Create] Error #{inspect err}")
+            Logger.error("[OrderAPI] Create error #{inspect err}")
             conn |> send_resp(500, "") |> halt()
         end
       err ->
-        Logger.error("[Create] Error #{inspect err}")
+        Logger.error("[OrderAPI] Create error #{inspect err}")
         conn |> send_resp(500, "") |> halt()
     end
   end
@@ -80,10 +80,10 @@ defmodule ImtOrder.API do
     {:ok, node} = OrderDispatcher.start(orderid)
     case OrderTransactor.payment(node, orderid, transaction_id) do
       :ok ->
-        Logger.info("Order #{orderid} payment received")
+        Logger.info("[OrderAPI] Order #{orderid} payment received")
         conn |> send_resp(200, "") |> halt()
       err ->
-        Logger.error("[Payment] Error #{inspect err}")
+        Logger.error("[OrderAPI] Payment error #{inspect err}")
         conn |> send_resp(400, "") |> halt()
     end
   end

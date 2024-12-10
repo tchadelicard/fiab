@@ -4,6 +4,7 @@ defmodule ImtOrder.OrderDispatcher do
 
   This module serves as a wrapper around the `OrderDispatcher.Server` to start transactors for orders.
   """
+  @timeout 20_000
 
   @doc """
   Starts a transactor for a given `order_id`.
@@ -18,11 +19,11 @@ defmodule ImtOrder.OrderDispatcher do
   - `{:error, reason}` if there was an issue starting the transactor.
   """
   def start(order_id) do
-    GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id}, 20_000)
+    GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id}, @timeout)
   end
 
   def start(node, order_id) do
-    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id}, 20_000)
+    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id}, @timeout)
   end
 end
 
@@ -101,6 +102,7 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   and starting transactors on appropriate nodes.
   """
 
+  require Logger
   alias ImtOrder.OrderDispatcher
 
   @doc """
@@ -173,15 +175,19 @@ defmodule ImtOrder.OrderDispatcher.Impl do
       true ->
         case ImtOrder.OrderTransactor.start(order_id) do
           {:ok, _} ->
+            Logger.info("[OrderDispatcher] Node #{node} for order #{order_id}")
             {:ok, node, state}
           {:error, _} ->
+            Logger.error("[OrderDispatcher] Failed to start transactor on node #{node}")
             {:error, state}
         end
       false ->
         case OrderDispatcher.start(node, order_id) do
           :ok ->
+            Logger.info("[OrderDispatcher] Node #{node} for order #{order_id}")
             {:ok, node, state}
           {:error, _} ->
+            Logger.error("[OrderDispatcher] Failed to start transactor on node #{node}")
             {:error, state}
         end
     end

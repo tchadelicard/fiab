@@ -136,7 +136,7 @@ defmodule ImtOrder.OrderTransactor.Server do
   Initializes the GenServer state with the order ID.
   """
   def init(order_id) do
-    Logger.info("OrderTransactor: Starting transactor for order #{order_id}")
+    Logger.info("[OrderTransactor] Node #{Node.self}: Starting transactor for order #{order_id}")
     {:ok, %{id: order_id, order: nil}}
   end
 
@@ -153,7 +153,7 @@ defmodule ImtOrder.OrderTransactor.Server do
   end
 
   def handle_call({:new, _}, _from, state) do
-    {:reply, {:error, "Order already processed"}, state}
+    {:reply, {:error, "Order #{state.id} already processed"}, state}
   end
 
   @doc """
@@ -165,12 +165,12 @@ defmodule ImtOrder.OrderTransactor.Server do
   """
   def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order_state}) when not is_nil(order_state) do
     {:ok, _, order} = Impl.process_payments(order_id, transaction_id)
-    Logger.info("OrderTransactor: Order #{order_id} payment received")
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received")
     {:reply, :ok, %{id: order_id, order: order}}
   end
 
   def handle_call({:payment, _}, _from, %{id: order_id, order: nil}) do
-    Logger.warning("OrderTransactor: Order #{order_id} payment received without order")
+    Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received without order")
     {:reply, {:error, "Order #{order_id} not found"}, %{id: order_id, order: nil}}
   end
 
@@ -183,10 +183,10 @@ defmodule ImtOrder.OrderTransactor.Server do
   def handle_cast(:process_delivery, %{id: order_id, order: order}) do
     case Impl.process_delivery(order, @retires) do
       {:ok, _} ->
-        Logger.info("OrderTransactor: Order #{order_id} process delivery successful")
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery successful")
         {:stop, :normal, %{id: order_id, order: order}}
       {:error, _} ->
-        Logger.warning("OrderTransactor: Order #{order_id} process delivery failed")
+        Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
         {:stop, :normal, %{id: order_id, order: order}}
     end
   end
@@ -243,7 +243,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
 
     MicroDb.HashTable.put("orders", order["id"], order)
 
-    {:ok, "Order created", order}
+    {:ok, "Order #{order["id"]} created", order}
   end
 
   @doc """
@@ -268,7 +268,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
     # Trigger delivery asynchronously
     GenServer.cast(:"#{order_id}_transactor", :process_delivery)
 
-    {:ok, "Order payment received", order}
+    {:ok, "Order #{order_id} payment received", order}
   end
 
   @doc """
@@ -294,7 +294,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
              []
            ) do
         {:ok, {{_, 200, _}, _, _}} ->
-          {:halt, {:ok, "Order process delivery request sent"}}
+          {:halt, {:ok, "Order #{order["id"]} process delivery request sent"}}
 
         _ ->
           # Calculate exponential backoff delay
@@ -303,7 +303,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
 
           # Halt on the last attempt, otherwise continue retrying
           if attempt == max_retries do
-            {:halt, {:error, "Order process delivery request failed"}}
+            {:halt, {:error, "Order #{order["id"]} process delivery request failed"}}
           else
             {:cont, :error}
           end
