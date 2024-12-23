@@ -5,7 +5,7 @@ defmodule ImtOrder.OrderTransactor do
   This module defines functions to start an order transactor, create a new order, and process payments.
   """
 
-  @timeout 20_000
+  @timeout 5_000
 
   @doc """
   Starts a transactor process for the given `order_id`.
@@ -148,8 +148,7 @@ defmodule ImtOrder.OrderTransactor.Server do
   - `{:error, reason}` if the order has already been processed.
   """
   def handle_call({:new, order}, _from, %{id: order_id, order: nil}) do
-    order = Impl.process_order(order)
-    {:reply, :ok, %{id: order_id, order: order}}
+    {:reply, :ok, %{id: order_id, order: order}, {:continue, :process_order}}
   end
 
   def handle_call({:new, _}, _from, state) do
@@ -189,6 +188,11 @@ defmodule ImtOrder.OrderTransactor.Server do
         Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
         {:stop, :normal, %{id: order_id, order: order}}
     end
+  end
+
+  def handle_continue(:process_order, %{id: order_id, order: order}) do
+    order = Impl.process_order(order)
+    {:noreply, %{id: order_id, order: order}}
   end
 
   @doc """
@@ -241,7 +245,8 @@ defmodule ImtOrder.OrderTransactor.Impl do
       []
     )
 
-    MicroDb.HashTable.put("orders", order["id"], order)
+    # Test with less writes to the database
+    #MicroDb.HashTable.put("orders", order["id"], order)
 
     {:ok, "Order #{order["id"]} created", order}
   end
@@ -263,7 +268,8 @@ defmodule ImtOrder.OrderTransactor.Impl do
   def process_payments(order_id, transaction_id) do
     order = MicroDb.HashTable.get("orders", order_id)
     order = Map.put(order, "transaction_id", transaction_id)
-    MicroDb.HashTable.put("orders", order_id, order)
+    # Test with less writes to the database
+    #MicroDb.HashTable.put("orders", order_id, order)
 
     # Trigger delivery asynchronously
     GenServer.cast(:"#{order_id}_transactor", :process_delivery)
