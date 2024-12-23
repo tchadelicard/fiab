@@ -5,7 +5,7 @@ defmodule ImtOrder.OrderTransactor do
   This module defines functions to start an order transactor, create a new order, and process payments.
   """
 
-  @timeout 5_000
+  @timeout 10_000
 
   @doc """
   Starts a transactor process for the given `order_id`.
@@ -162,15 +162,21 @@ defmodule ImtOrder.OrderTransactor.Server do
   - `:ok` if the payment is processed successfully.
   - `{:error, reason}` if the order is not found.
   """
-  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order_state}) when not is_nil(order_state) do
-    {:ok, _, order} = Impl.process_payments(order_id, transaction_id)
+  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order}) when not is_nil(order) do
+    {:ok, order} = Impl.process_payments(order, transaction_id)
     Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received")
-    {:reply, :ok, %{id: order_id, order: order}}
+    {:reply, :ok, %{id: order_id, order: order}, {:continue, :process_delivery}}
   end
 
   def handle_call({:payment, _}, _from, %{id: order_id, order: nil}) do
     Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received without order")
     {:reply, {:error, "Order #{order_id} not found"}, %{id: order_id, order: nil}}
+  end
+
+
+  def handle_continue(:process_order, %{id: order_id, order: order}) do
+    {:ok, order} = Impl.process_order(order)
+    {:noreply, %{id: order_id, order: order}}
   end
 
   @doc """
@@ -179,7 +185,7 @@ defmodule ImtOrder.OrderTransactor.Server do
   ## Returns
   - `{:stop, :normal, state}` when processing completes, regardless of success or failure.
   """
-  def handle_cast(:process_delivery, %{id: order_id, order: order}) do
+  def handle_continue(:process_delivery, %{id: order_id, order: order}) do
     case Impl.process_delivery(order, @retires) do
       {:ok, _} ->
         Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery successful")
@@ -188,11 +194,6 @@ defmodule ImtOrder.OrderTransactor.Server do
         Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
         {:stop, :normal, %{id: order_id, order: order}}
     end
-  end
-
-  def handle_continue(:process_order, %{id: order_id, order: order}) do
-    order = Impl.process_order(order)
-    {:noreply, %{id: order_id, order: order}}
   end
 
   @doc """
@@ -248,7 +249,7 @@ defmodule ImtOrder.OrderTransactor.Impl do
     # Test with less writes to the database
     #MicroDb.HashTable.put("orders", order["id"], order)
 
-    {:ok, "Order #{order["id"]} created", order}
+    {:ok, order}
   end
 
   @doc """
@@ -265,16 +266,11 @@ defmodule ImtOrder.OrderTransactor.Impl do
   ## Returns
   - `{:ok, message, order}` on success.
   """
-  def process_payments(order_id, transaction_id) do
-    order = MicroDb.HashTable.get("orders", order_id)
-    order = Map.put(order, "transaction_id", transaction_id)
+  def process_payments(order, transaction_id) do
+    order = order |> Map.put("transaction_id", transaction_id)
     # Test with less writes to the database
-    #MicroDb.HashTable.put("orders", order_id, order)
-
-    # Trigger delivery asynchronously
-    GenServer.cast(:"#{order_id}_transactor", :process_delivery)
-
-    {:ok, "Order #{order_id} payment received", order}
+    #MicroDb.HashTable.put("orders", order["id"], order)
+    {:ok, order}
   end
 
   @doc """

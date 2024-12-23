@@ -4,7 +4,7 @@ defmodule ImtOrder.OrderDispatcher do
 
   This module serves as a wrapper around the `OrderDispatcher.Server` to start transactors for orders.
   """
-  @timeout 5_000
+  @timeout 10_000
 
   @doc """
   Starts a transactor for a given `order_id`.
