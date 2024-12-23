@@ -4,7 +4,7 @@ defmodule ImtOrder.OrderDispatcher do
 
   This module serves as a wrapper around the `OrderDispatcher.Server` to start transactors for orders.
   """
-  @timeout 20_000
+  @timeout 5_000
 
   @doc """
   Starts a transactor for a given `order_id`.
@@ -58,8 +58,7 @@ defmodule ImtOrder.OrderDispatcher.Server do
   - `{:ok, state}` with the initial state.
   """
   def init(_) do
-    state = %{nodes: []}
-    {:ok, state |> Impl.update_nodes()}
+    {:ok, %{ring: nil} |> Impl.init_ring()}
   end
 
   @doc """
@@ -106,19 +105,6 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   alias ImtOrder.OrderDispatcher
 
   @doc """
-  Hashes the given `order_id` using Erlang's `phash2` function.
-
-  ## Parameters
-  - `order_id`: The unique identifier for the order.
-
-  ## Returns
-  - A hash value for the `order_id`.
-  """
-  def hash_order_id(order_id) do
-    :erlang.phash2(order_id)
-  end
-
-  @doc """
   Determines the node on which to place a transactor for a given `order_id`.
 
   Uses consistent hashing to select a node from the list of available nodes.
@@ -131,8 +117,7 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - The selected node for the transactor.
   """
   def get_node(state, order_id) do
-    nodes = state.nodes
-    Enum.at(nodes, rem(hash_order_id(order_id), Enum.count(nodes)))
+    HashRing.key_to_node(state[:ring], order_id)
   end
 
   @doc """
@@ -146,10 +131,12 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   ## Returns
   - The updated state with the new list of nodes.
   """
-  def update_nodes(state) do
+  def init_ring(state) do
     nodes = Enum.count(Application.get_env(:distmix, :nodes)) - 5
-    nodes = for i <- 0..nodes, do: :"imt_order_#{4+i}@127.0.0.1"
-    state |> Map.put(:nodes, nodes)
+    ring = for i <- 0..nodes do
+      :"imt_order_#{4+i}@127.0.0.1"
+    end |> Enum.reduce(HashRing.new(), fn node, ring -> HashRing.add_node(ring, node) end)
+    %{state | ring: ring}
   end
 
   @doc """
@@ -167,8 +154,6 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - `{:error, updated_state}` if the transactor could not be started.
   """
   def start_transactor(state, order_id) do
-    state = state |> update_nodes()
-
     node = state |> get_node(order_id)
 
     case node == Node.self() do

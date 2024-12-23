@@ -23,7 +23,8 @@ defmodule ImtOrder.MixProject do
   defp deps do
     [
       {:poison, "~> 4.0.1"},
-      {:plug_cowboy, "~> 2.5.2"}
+      {:plug_cowboy, "~> 2.5.2"},
+      {:libring, "~> 1.0"}
     ]
   end
 end
