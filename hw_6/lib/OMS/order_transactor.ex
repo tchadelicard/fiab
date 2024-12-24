@@ -122,6 +122,8 @@ defmodule ImtOrder.OrderTransactor.Server do
 
   @retires 3
 
+  @timeout 10_000
+
   @doc """
   Starts the GenServer for the given `order_id`.
 
@@ -151,8 +153,10 @@ defmodule ImtOrder.OrderTransactor.Server do
     {:reply, :ok, %{id: order_id, order: order}, {:continue, :process_order}}
   end
 
-  def handle_call({:new, _}, _from, state) do
-    {:reply, {:error, "Order #{state.id} already processed"}, state}
+  def handle_call({:new, order}, _from, state) do
+    order = Map.merge(state.order, order)
+    state = Map.put(state, :order, order)
+    {:reply, :ok, state, {:continue, :process_order}}
   end
 
   @doc """
@@ -162,21 +166,29 @@ defmodule ImtOrder.OrderTransactor.Server do
   - `:ok` if the payment is processed successfully.
   - `{:error, reason}` if the order is not found.
   """
-  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order}) when not is_nil(order) do
-    {:ok, order} = Impl.process_payments(order, transaction_id)
-    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received")
-    {:reply, :ok, %{id: order_id, order: order}, {:continue, :process_delivery}}
-  end
-
-  def handle_call({:payment, _}, _from, %{id: order_id, order: nil}) do
+  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: nil}) do
     Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received without order")
-    {:reply, {:error, "Order #{order_id} not found"}, %{id: order_id, order: nil}}
+    {:reply, :ok, %{id: order_id, order: %{"transaction_id" => transaction_id}}}
   end
 
+  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order}) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received")
+    {:reply, :ok, %{id: order_id, order: order}, {:continue, {:process_payment, transaction_id}}}
+  end
 
   def handle_continue(:process_order, %{id: order_id, order: order}) do
     {:ok, order} = Impl.process_order(order)
-    {:noreply, %{id: order_id, order: order}}
+    case Map.get(order, "transaction_id") do
+      nil -> {:noreply, %{id: order_id, order: order}}
+      _ ->
+        Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} transaction already processed")
+        {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
+    end
+  end
+
+  def handle_continue({:process_payment, transaction_id}, %{id: order_id, order: order}) do
+    {:ok, order} = Impl.process_payments(order, transaction_id)
+    {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
   end
 
   @doc """
@@ -189,11 +201,18 @@ defmodule ImtOrder.OrderTransactor.Server do
     case Impl.process_delivery(order, @retires) do
       {:ok, _} ->
         Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery successful")
-        {:stop, :normal, %{id: order_id, order: order}}
+        {:noreply, %{id: order_id, order: order}, @timeout}
+        #{:stop, :normal, %{id: order_id, order: order}}
       {:error, _} ->
-        Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
-        {:stop, :normal, %{id: order_id, order: order}}
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
+        {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
+        #{:stop, :normal, %{id: order_id, order: order}}
     end
+  end
+
+  def handle_info(:timeout, state) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} processed successfully")
+    {:stop, :normal, state}
   end
 
   @doc """
