@@ -81,17 +81,6 @@ defmodule ImtOrder.OrderTransactor.Supervisor do
   end
 
   @doc """
-  Lists the names and PIDs of all transactors supervised by this module.
-  """
-  def list_children_names do
-    DynamicSupervisor.which_children(__MODULE__)
-    |> Enum.each(fn {_, pid, :worker, [ImtOrder.OrderTransactor.Server]} ->
-      transactor_name = Process.info(pid, :registered_name) |> elem(1)
-      IO.puts("OrderTransactor: #{inspect(transactor_name)} with PID: #{inspect(pid)}")
-    end)
-  end
-
-  @doc """
   Starts the DynamicSupervisor with the given `init_arg`.
 
   ## Returns
@@ -139,6 +128,13 @@ defmodule ImtOrder.OrderTransactor.Server do
   """
   def init({order_id, replicas}) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Starting transactor for order #{order_id}")
+
+    Enum.each(replicas, fn replica ->
+      if replica != Node.self() do
+        Node.monitor(replica, true)
+      end
+    end)
+
     {:ok, %{id: order_id, order: nil, replicas: replicas}}
   end
 
@@ -234,6 +230,18 @@ defmodule ImtOrder.OrderTransactor.Server do
   def handle_info(:timeout, state) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} processed successfully")
     {:stop, :normal, state}
+  end
+
+  def handle_info({:nodeup, node}, state) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Node #{node} is up")
+    state = Impl.update_replicas(state, node, :add)
+    {:noreply, state}
+  end
+
+  def handle_info({:nodedown, node}, state) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Node #{node} is up")
+    state = Impl.update_replicas(state, node, :remove)
+    {:noreply, state}
   end
 
   @doc """
@@ -383,5 +391,13 @@ defmodule ImtOrder.OrderTransactor.Impl do
         GenServer.cast({:"#{order_id}_transactor", replica}, :shutdown)
       end
     end)
+  end
+
+  def update_replicas(state, node, :add) do
+    %{state | replicas: Enum.uniq([node | state.replicas])}
+  end
+
+  def update_replicas(state, node, :remove) do
+    %{state | replicas: Enum.filter(state.replicas, &(&1 != node))}
   end
 end

@@ -105,6 +105,8 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   alias ImtOrder.OrderTransactor
   alias ImtOrder.OrderDispatcher
 
+  @replicas 2
+
   @doc """
   Updates the list of available nodes in the dispatcher's state.
 
@@ -138,7 +140,7 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - `{:ok, node, updated_state}` if the transactor is successfully started.
   - `{:error, updated_state}` if the transactor could not be started.
   """
-  def start_transactor(state, order_id, replicas \\ 2) do
+  def start_transactor(state, order_id, replicas \\ @replicas) do
     replicas = HashRing.key_to_nodes(state[:ring], order_id, replicas)
 
     # Start transactors on all nodes and return the first healthy one
