@@ -5,7 +5,7 @@ defmodule ImtOrder.OrderTransactor do
   This module defines functions to start an order transactor, create a new order, and process payments.
   """
 
-  @timeout 10_000
+  @timeout 30_000
 
   @doc """
   Starts a transactor process for the given `order_id`.
@@ -17,8 +17,8 @@ defmodule ImtOrder.OrderTransactor do
   - `{:ok, pid}` if the transactor is started successfully.
   - `{:error, reason}` if there is an issue starting the transactor.
   """
-  def start(order_id) do
-    ImtOrder.OrderTransactor.Supervisor.start_transactor(order_id)
+  def start(order_id, replicas) do
+    ImtOrder.OrderTransactor.Supervisor.start_transactor(order_id, replicas)
   end
 
   @doc """
@@ -72,8 +72,8 @@ defmodule ImtOrder.OrderTransactor.Supervisor do
   - `{:ok, pid}` if the transactor is started successfully.
   - `{:error, reason}` if starting the transactor fails.
   """
-  def start_transactor(order_id) do
-    case DynamicSupervisor.start_child(__MODULE__, {ImtOrder.OrderTransactor.Server, order_id}) do
+  def start_transactor(order_id, replicas) do
+    case DynamicSupervisor.start_child(__MODULE__, {ImtOrder.OrderTransactor.Server, {order_id, replicas}}) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
@@ -130,16 +130,16 @@ defmodule ImtOrder.OrderTransactor.Server do
   ## Returns
   - `{:ok, pid}` if the server is started successfully.
   """
-  def start_link(order_id) do
-    GenServer.start_link(__MODULE__, order_id, name: :"#{order_id}_transactor")
+  def start_link({order_id, replicas}) do
+    GenServer.start_link(__MODULE__, {order_id, replicas}, name: :"#{order_id}_transactor")
   end
 
   @doc """
   Initializes the GenServer state with the order ID.
   """
-  def init(order_id) do
+  def init({order_id, replicas}) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Starting transactor for order #{order_id}")
-    {:ok, %{id: order_id, order: nil}}
+    {:ok, %{id: order_id, order: nil, replicas: replicas}}
   end
 
   @doc """
@@ -149,8 +149,9 @@ defmodule ImtOrder.OrderTransactor.Server do
   - `:ok` if the order is created successfully.
   - `{:error, reason}` if the order has already been processed.
   """
-  def handle_call({:new, order}, _from, %{id: order_id, order: nil}) do
-    {:reply, :ok, %{id: order_id, order: order}, {:continue, :process_order}}
+  def handle_call({:new, order}, _from, %{order: nil} = state) do
+    state = Map.put(state, :order, order)
+    {:reply, :ok, state, {:continue, :process_order}}
   end
 
   def handle_call({:new, order}, _from, state) do
@@ -166,29 +167,33 @@ defmodule ImtOrder.OrderTransactor.Server do
   - `:ok` if the payment is processed successfully.
   - `{:error, reason}` if the order is not found.
   """
-  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: nil}) do
-    Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received without order")
-    {:reply, :ok, %{id: order_id, order: %{"transaction_id" => transaction_id}}}
+  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{order: nil} = state) do
+    Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{state[:id]} payment received without order")
+    state = Map.put(state, :order, %{"transaction_id" => transaction_id})
+    {:reply, :ok, state, {:continue, :sync}}
   end
 
-  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, %{id: order_id, order: order}) do
-    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} payment received")
-    {:reply, :ok, %{id: order_id, order: order}, {:continue, {:process_payment, transaction_id}}}
+  def handle_call({:payment, %{"transaction_id" => transaction_id}}, _from, state) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state[:id]} payment received")
+    {:reply, :ok, state, {:continue, {:process_payment, transaction_id}}}
   end
 
-  def handle_continue(:process_order, %{id: order_id, order: order}) do
+  def handle_continue(:process_order, %{order: order} = state) do
     {:ok, order} = Impl.process_order(order)
     case Map.get(order, "transaction_id") do
-      nil -> {:noreply, %{id: order_id, order: order}}
+      nil ->
+        state = Map.put(state, :order, order)
+        {:noreply, state, {:continue, :sync}}
       _ ->
-        Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{order_id} transaction already processed")
-        {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
+        Logger.warning("[OrderTransactor] Node #{Node.self}: Order #{state[:id]} transaction already processed")
+        {:noreply, state, {:continue, :process_delivery}}
     end
   end
 
-  def handle_continue({:process_payment, transaction_id}, %{id: order_id, order: order}) do
+  def handle_continue({:process_payment, transaction_id}, %{order: order} = state) do
     {:ok, order} = Impl.process_payments(order, transaction_id)
-    {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
+    state = Map.put(state, :order, order)
+    {:noreply, state, {:continue, :process_delivery}}
   end
 
   @doc """
@@ -197,17 +202,33 @@ defmodule ImtOrder.OrderTransactor.Server do
   ## Returns
   - `{:stop, :normal, state}` when processing completes, regardless of success or failure.
   """
-  def handle_continue(:process_delivery, %{id: order_id, order: order}) do
+  def handle_continue(:process_delivery, %{order: order} = state) do
     case Impl.process_delivery(order, @retires) do
       {:ok, _} ->
-        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery successful")
-        {:noreply, %{id: order_id, order: order}, @timeout}
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state[:id]} process delivery successful")
+        {:noreply, state, @timeout}
         #{:stop, :normal, %{id: order_id, order: order}}
       {:error, _} ->
-        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} process delivery failed")
-        {:noreply, %{id: order_id, order: order}, {:continue, :process_delivery}}
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state[:id]} process delivery failed")
+        {:noreply, state, {:continue, :process_delivery}}
         #{:stop, :normal, %{id: order_id, order: order}}
     end
+  end
+
+  def handle_continue(:sync, %{order: order, replicas: replicas} = state) do
+    Impl.sync_nodes(order, replicas)
+    {:noreply, state}
+  end
+
+  def handle_cast({:sync, order}, state) do
+    state = Map.put(state, :order, order)
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} synchronized")
+    {:noreply, state}
+  end
+
+  def handle_cast(:shutdown, state) do
+    Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} shutting down")
+    {:stop, :normal, state}
   end
 
   def handle_info(:timeout, state) do
@@ -218,8 +239,16 @@ defmodule ImtOrder.OrderTransactor.Server do
   @doc """
   Ensures the order state is saved upon termination.
   """
-  def terminate(_, %{id: order_id, order: order}) do
-    MicroDb.HashTable.put("orders", order_id, order)
+  def terminate(_, %{id: order_id, order: order, replicas: replicas}) do
+    Impl.sync_nodes(order, replicas)
+    case Impl.is_leader(replicas) do
+      true ->
+        Impl.shutdown_replicas(replicas, order_id)
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} is leader, writing to database")
+        MicroDb.HashTable.put("orders", order_id, order)
+      false ->
+        Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} not leader, skipping write")
+    end
   end
 end
 
@@ -328,6 +357,30 @@ defmodule ImtOrder.OrderTransactor.Impl do
           else
             {:cont, :error}
           end
+      end
+    end)
+  end
+
+  def sync_nodes(order, replicas) do
+    nodes = replicas -- [Node.self]
+    Enum.each(nodes, fn node ->
+      GenServer.cast({:"#{order["id"]}_transactor", node}, {:sync, order})
+    end)
+  end
+
+  def is_leader(replicas) do
+    case Enum.find(replicas, &Node.ping(&1) == :pong) do
+      nil ->
+        false
+      leader ->
+        Node.self() == leader
+    end
+  end
+
+  def shutdown_replicas(replicas, order_id) do
+    Enum.each(replicas, fn replica ->
+      if replica != Node.self() do
+        GenServer.cast({:"#{order_id}_transactor", replica}, :shutdown)
       end
     end)
   end

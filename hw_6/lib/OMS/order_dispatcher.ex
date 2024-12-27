@@ -4,7 +4,7 @@ defmodule ImtOrder.OrderDispatcher do
 
   This module serves as a wrapper around the `OrderDispatcher.Server` to start transactors for orders.
   """
-  @timeout 10_000
+  @timeout 30_000
 
   @doc """
   Starts a transactor for a given `order_id`.
@@ -22,8 +22,8 @@ defmodule ImtOrder.OrderDispatcher do
     GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id}, @timeout)
   end
 
-  def start(node, order_id) do
-    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id}, @timeout)
+  def start(node, order_id, replicas) do
+    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id, replicas}, @timeout)
   end
 end
 
@@ -85,8 +85,8 @@ defmodule ImtOrder.OrderDispatcher.Server do
     end
   end
 
-  def handle_call({:start_transactor, order_id}, _from, state) do
-    case ImtOrder.OrderTransactor.start(order_id) do
+  def handle_call({:start_transactor, order_id, replicas}, _from, state) do
+    case ImtOrder.OrderTransactor.start(order_id, replicas) do
       {:ok, _} -> {:reply, :ok, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -102,23 +102,8 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   """
 
   require Logger
+  alias ImtOrder.OrderTransactor
   alias ImtOrder.OrderDispatcher
-
-  @doc """
-  Determines the node on which to place a transactor for a given `order_id`.
-
-  Uses consistent hashing to select a node from the list of available nodes.
-
-  ## Parameters
-  - `state`: The current state of the dispatcher.
-  - `order_id`: The unique identifier for the order.
-
-  ## Returns
-  - The selected node for the transactor.
-  """
-  def get_node(state, order_id) do
-    HashRing.key_to_node(state[:ring], order_id)
-  end
 
   @doc """
   Updates the list of available nodes in the dispatcher's state.
@@ -153,28 +138,44 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - `{:ok, node, updated_state}` if the transactor is successfully started.
   - `{:error, updated_state}` if the transactor could not be started.
   """
-  def start_transactor(state, order_id) do
-    node = state |> get_node(order_id)
+  def start_transactor(state, order_id, replicas \\ 2) do
+    replicas = HashRing.key_to_nodes(state[:ring], order_id, replicas)
 
-    case node == Node.self() do
-      true ->
-        case ImtOrder.OrderTransactor.start(order_id) do
-          {:ok, _} ->
-            Logger.info("[OrderDispatcher] Node #{node} for order #{order_id}")
-            {:ok, node, state}
-          {:error, _} ->
-            Logger.error("[OrderDispatcher] Failed to start transactor on node #{node}")
-            {:error, state}
+    # Start transactors on all nodes and return the first healthy one
+    results =
+      Enum.map(replicas, fn replica ->
+        if replica == Node.self() do
+          # Start transactor locally
+          case OrderTransactor.start(order_id, replicas) do
+            {:ok, _pid} ->
+              Logger.info("[OrderDispatcher] Transactor started locally on #{Node.self()} for order #{order_id}")
+              {:ok, Node.self()}
+            {:error, reason} ->
+              Logger.error("[OrderDispatcher] Failed to start transactor locally on #{Node.self()}: #{inspect(reason)}")
+              {:error, reason}
+          end
+        else
+          # Start transactor remotely
+          case OrderDispatcher.start(replica, order_id, replicas) do
+            :ok ->
+              Logger.info("[OrderDispatcher] Transactor started on remote node #{replica} for order #{order_id}")
+              {:ok, replica}
+            {:error, reason} ->
+              Logger.error("[OrderDispatcher] Failed to start transactor on remote node #{replica}: #{inspect(reason)}")
+              {:error, reason}
+          end
         end
-      false ->
-        case OrderDispatcher.start(node, order_id) do
-          :ok ->
-            Logger.info("[OrderDispatcher] Node #{node} for order #{order_id}")
-            {:ok, node, state}
-          {:error, _} ->
-            Logger.error("[OrderDispatcher] Failed to start transactor on node #{node}")
-            {:error, state}
-        end
+      end)
+
+    # Find the first healthy node
+    case Enum.find(results, fn {:ok, _replica} -> true; _ -> false end) do
+      {:ok, healthy_node} ->
+        Logger.info("[OrderDispatcher] First healthy node is #{inspect(healthy_node)} for order #{order_id}")
+        {:ok, healthy_node, state}
+      nil ->
+        Logger.error("[OrderDispatcher] No healthy nodes available for order #{order_id}")
+        {:error, state}
     end
   end
+
 end
