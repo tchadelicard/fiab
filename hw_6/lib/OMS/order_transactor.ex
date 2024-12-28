@@ -21,6 +21,10 @@ defmodule ImtOrder.OrderTransactor do
     ImtOrder.OrderTransactor.Supervisor.start_transactor(order_id, replicas)
   end
 
+  def start(node, order_id, replicas) do
+    :rpc.call(node, ImtOrder.OrderTransactor.Supervisor, :start_transactor, [order_id, replicas], @timeout)
+  end
+
   @doc """
   Sends a synchronous call to create a new order on the specified node.
 

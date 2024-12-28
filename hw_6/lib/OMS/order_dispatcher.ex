@@ -22,9 +22,6 @@ defmodule ImtOrder.OrderDispatcher do
     GenServer.call(ImtOrder.OrderDispatcher.Server, {:start, order_id}, @timeout)
   end
 
-  def start(node, order_id, replicas) do
-    GenServer.call({ImtOrder.OrderDispatcher.Server, node}, {:start_transactor, order_id, replicas}, @timeout)
-  end
 end
 
 defmodule ImtOrder.OrderDispatcher.Server do
@@ -84,13 +81,6 @@ defmodule ImtOrder.OrderDispatcher.Server do
         {:reply, {:error, "Failed to start transactor"}, updated_state}
     end
   end
-
-  def handle_call({:start_transactor, order_id, replicas}, _from, state) do
-    case ImtOrder.OrderTransactor.start(order_id, replicas) do
-      {:ok, _} -> {:reply, :ok, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
 end
 
 defmodule ImtOrder.OrderDispatcher.Impl do
@@ -103,7 +93,6 @@ defmodule ImtOrder.OrderDispatcher.Impl do
 
   require Logger
   alias ImtOrder.OrderTransactor
-  alias ImtOrder.OrderDispatcher
 
   @replicas 2
 
@@ -158,8 +147,8 @@ defmodule ImtOrder.OrderDispatcher.Impl do
           end
         else
           # Start transactor remotely
-          case OrderDispatcher.start(replica, order_id, replicas) do
-            :ok ->
+          case OrderTransactor.start(replica, order_id, replicas) do
+            {:ok, _pid} ->
               Logger.info("[OrderDispatcher] Transactor started on remote node #{replica} for order #{order_id}")
               {:ok, replica}
             {:error, reason} ->
@@ -179,5 +168,4 @@ defmodule ImtOrder.OrderDispatcher.Impl do
         {:error, state}
     end
   end
-
 end
