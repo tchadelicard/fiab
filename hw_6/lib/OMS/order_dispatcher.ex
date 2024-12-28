@@ -73,7 +73,7 @@ defmodule ImtOrder.OrderDispatcher.Server do
   - `{:reply, {:error, reason}, updated_state}` if the transactor could not be started.
   """
   def handle_call({:start, order_id}, _from, state) do
-    case Impl.start_transactor(state, order_id) do
+    case Impl.start(state, order_id) do
       {:ok, node, updated_state} ->
         {:reply, {:ok, node}, updated_state}
 
@@ -129,7 +129,7 @@ defmodule ImtOrder.OrderDispatcher.Impl do
   - `{:ok, node, updated_state}` if the transactor is successfully started.
   - `{:error, updated_state}` if the transactor could not be started.
   """
-  def start_transactor(state, order_id, replicas \\ @replicas) do
+  def start(state, order_id, replicas \\ @replicas) do
     replicas = HashRing.key_to_nodes(state[:ring], order_id, replicas)
 
     # Start transactors on all nodes and return the first healthy one
