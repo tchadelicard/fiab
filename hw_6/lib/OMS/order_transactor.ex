@@ -111,6 +111,7 @@ defmodule ImtOrder.OrderTransactor.Server do
 
   use GenServer, restart: :transient
   require Logger
+  alias ImtOrder.OrderDispatcher
   alias ImtOrder.OrderTransactor.Impl
 
   @retires 3
@@ -258,6 +259,7 @@ defmodule ImtOrder.OrderTransactor.Server do
         Impl.shutdown_replicas(replicas, order_id)
         Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} is leader, writing to database")
         MicroDb.HashTable.put("orders", order_id, order)
+        OrderDispatcher.delete(order_id)
       false ->
         Logger.info("[OrderTransactor] Node #{Node.self}: Order #{order_id} not leader, skipping write")
     end
