@@ -8,10 +8,10 @@ use Mix.Config
     },
     front: %{
       rate: 1, # Number of calls per second from front to OMS
-      duration: 60, # Time during which the simulation runs in seconds
+      duration: 30, # Time during which the simulation runs in seconds
       weights: %{
-        order: 2,
-        stats: 10,
+        order: 12,
+        stats: 0,
       },
     },
     back: %{
