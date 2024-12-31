@@ -7,20 +7,34 @@ defmodule ImtOrder.OrderTransactor do
 
   @timeout 30_000
 
+
   @doc """
-  Starts a transactor process for the given `order_id`.
+  Starts a transactor process for the given `order_id` on the current node.
 
   ## Parameters
   - `order_id`: The unique identifier for the order.
+  - `replicas`: A list of nodes for replication.
 
   ## Returns
   - `{:ok, pid}` if the transactor is started successfully.
-  - `{:error, reason}` if there is an issue starting the transactor.
+  - `{:error, reason}` on failure.
   """
   def start(order_id, replicas) do
     ImtOrder.OrderTransactor.Supervisor.start_transactor(order_id, replicas)
   end
 
+  @doc """
+  Starts a transactor process for the given `order_id` on a remote node.
+
+  ## Parameters
+  - `node`: The target remote node.
+  - `order_id`: The unique identifier for the order.
+  - `replicas`: A list of nodes for replication.
+
+  ## Returns
+  - `{:ok, pid}` if the transactor is started successfully.
+  - `{:error, reason}` on failure.
+  """
   def start(node, order_id, replicas) do
     :rpc.call(node, ImtOrder.OrderTransactor.Supervisor, :start_transactor, [order_id, replicas], @timeout)
   end
@@ -71,6 +85,7 @@ defmodule ImtOrder.OrderTransactor.Supervisor do
 
   ## Parameters
   - `order_id`: The unique identifier for the order.
+  - `replicas`: A list of nodes for replication.
 
   ## Returns
   - `{:ok, pid}` if the transactor is started successfully.
@@ -104,9 +119,12 @@ end
 
 defmodule ImtOrder.OrderTransactor.Server do
   @moduledoc """
-  GenServer that handles the lifecycle and operations for a specific order.
+  GenServer that manages the lifecycle and operations of a specific order.
 
-  The server processes order creation, payment, and delivery with error handling and state management.
+  Responsibilities:
+  - Handling order creation, payment processing, and delivery.
+  - Managing state synchronization across replicas.
+  - Monitoring node up/down events.
   """
 
   use GenServer, restart: :transient
@@ -119,17 +137,22 @@ defmodule ImtOrder.OrderTransactor.Server do
   @timeout 10_000
 
   @doc """
-  Starts the GenServer for the given `order_id`.
+  Starts the GenServer for the given `order_id` and replicas.
+
+  ## Parameters
+  - `{order_id, replicas}`: A tuple containing the order ID and the list of replicas.
 
   ## Returns
-  - `{:ok, pid}` if the server is started successfully.
+  - `{:ok, pid}` if the server starts successfully.
   """
   def start_link({order_id, replicas}) do
     GenServer.start_link(__MODULE__, {order_id, replicas}, name: :"#{order_id}_transactor")
   end
 
   @doc """
-  Initializes the GenServer state with the order ID.
+  Initializes the GenServer state with the order ID and replicas.
+
+  - Monitors all replica nodes except the local node.
   """
   def init({order_id, replicas}) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Starting transactor for order #{order_id}")
@@ -146,9 +169,12 @@ defmodule ImtOrder.OrderTransactor.Server do
   @doc """
   Handles the creation of a new order.
 
+  ## Parameters
+  - `order`: A map containing the order details.
+
   ## Returns
-  - `:ok` if the order is created successfully.
-  - `{:error, reason}` if the order has already been processed.
+  - `:ok` on success.
+  - Updates the state with the new order details.
   """
   def handle_call({:new, order}, _from, %{order: nil} = state) do
     state = Map.put(state, :order, order)
@@ -179,6 +205,22 @@ defmodule ImtOrder.OrderTransactor.Server do
     {:reply, :ok, state, {:continue, {:process_payment, transaction_id}}}
   end
 
+  @doc """
+  Handles the continuation of order processing after the `:new` event.
+
+  - Calls `Impl.process_order/1` to perform order-specific operations such as selecting a store and saving the order.
+  - Checks whether a transaction ID exists in the processed order.
+    - If no transaction ID is present, the order is saved to the state, and synchronization is triggered.
+    - If a transaction ID already exists, it proceeds directly to the delivery process.
+
+  ## Parameters
+  - `:process_order`: The continuation trigger for order processing.
+  - `state`: The current GenServer state, which includes the `order`.
+
+  ## Returns
+  - `{:noreply, state, {:continue, :sync}}` to synchronize the state across replicas if no transaction ID is found.
+  - `{:noreply, state, {:continue, :process_delivery}}` to proceed with the delivery process if a transaction ID is already present.
+  """
   def handle_continue(:process_order, %{order: order} = state) do
     {:ok, order} = Impl.process_order(order)
     case Map.get(order, "transaction_id") do
@@ -191,6 +233,20 @@ defmodule ImtOrder.OrderTransactor.Server do
     end
   end
 
+  @doc """
+  Handles the continuation of payment processing after a `:payment` event.
+
+  - Calls `Impl.process_payments/2` to process the payment for the order, including updating the order with the transaction ID.
+  - Updates the state with the processed order.
+  - Triggers the next step, which is the delivery process.
+
+  ## Parameters
+  - `{:process_payment, transaction_id}`: The continuation trigger for payment processing, containing the transaction ID.
+  - `state`: The current GenServer state, which includes the `order`.
+
+  ## Returns
+  - `{:noreply, state, {:continue, :process_delivery}}` to proceed with the delivery process.
+  """
   def handle_continue({:process_payment, transaction_id}, %{order: order} = state) do
     {:ok, order} = Impl.process_payments(order, transaction_id)
     state = Map.put(state, :order, order)
@@ -198,10 +254,20 @@ defmodule ImtOrder.OrderTransactor.Server do
   end
 
   @doc """
-  Processes order delivery asynchronously with retries.
+  Processes the delivery of an order asynchronously with retries.
+
+  - Calls `Impl.process_delivery/2` to perform the delivery with a retry mechanism.
+  - Logs the outcome of the delivery attempt.
+  - If delivery succeeds, the state transitions to a timeout-based stop.
+  - If delivery fails, it continues the delivery process for retry.
+
+  ## Parameters
+  - `:process_delivery`: The continuation trigger for delivery processing.
+  - `state`: The current GenServer state, including the `order`.
 
   ## Returns
-  - `{:stop, :normal, state}` when processing completes, regardless of success or failure.
+  - `{:noreply, state, @timeout}` if delivery is successful, allowing the process to terminate naturally.
+  - `{:noreply, state, {:continue, :process_delivery}}` if delivery fails, triggering another retry.
   """
   def handle_continue(:process_delivery, %{order: order} = state) do
     case Impl.process_delivery(order, @retires) do
@@ -216,41 +282,124 @@ defmodule ImtOrder.OrderTransactor.Server do
     end
   end
 
+  @doc """
+  Synchronizes the state of an order across replicas.
+
+  - Calls `Impl.sync_nodes/2` to update all replicas with the current order state.
+
+  ## Parameters
+  - `:sync`: The continuation trigger for synchronization.
+  - `state`: The current GenServer state, including the `order` and `replicas`.
+
+  ## Returns
+  - `{:noreply, state}` after synchronization is completed.
+  """
   def handle_continue(:sync, %{order: order, replicas: replicas} = state) do
     Impl.sync_nodes(order, replicas)
     {:noreply, state}
   end
 
+  @doc """
+  Handles a cast message to synchronize the order state.
+
+  - Updates the local state with the synchronized order.
+  - Logs the synchronization event.
+
+  ## Parameters
+  - `{sync, order}`: The synchronization data containing the order details.
+  - `state`: The current GenServer state.
+
+  ## Returns
+  - `{:noreply, state}` after updating the state with the synchronized order.
+  """
   def handle_cast({:sync, order}, state) do
     state = Map.put(state, :order, order)
     Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} synchronized")
     {:noreply, state}
   end
 
+  @doc """
+  Handles a cast message to shut down the process.
+
+  - Logs the shutdown event.
+  - Stops the GenServer gracefully.
+
+  ## Parameters
+  - `:shutdown`: The shutdown command.
+  - `state`: The current GenServer state.
+
+  ## Returns
+  - `{:stop, :normal, state}` to terminate the GenServer process.
+  """
   def handle_cast(:shutdown, state) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} shutting down")
     {:stop, :normal, state}
   end
 
+
+  @doc """
+  Handles a timeout event.
+
+  - Logs that the order has been processed successfully.
+  - Stops the GenServer process gracefully.
+  - Allows all callbacks to run before termination.
+
+  ## Parameters
+  - `:timeout`: The timeout trigger.
+  - `state`: The current GenServer state.
+
+  ## Returns
+  - `{:stop, :normal, state}` to terminate the process.
+  """
   def handle_info(:timeout, state) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Order #{state.id} processed successfully")
     {:stop, :normal, state}
   end
 
+  @doc """
+  Handles a `:nodeup` event to update the replicas list.
+
+  - Adds the node to the list of replicas.
+  - Logs the node-up event.
+
+  ## Parameters
+  - `{:nodeup, node}`: The node-up event with the node identifier.
+  - `state`: The current GenServer state.
+
+  ## Returns
+  - `{:noreply, state}` with the updated replicas.
+  """
   def handle_info({:nodeup, node}, state) do
     Logger.info("[OrderTransactor] Node #{Node.self}: Node #{node} is up")
     state = Impl.update_replicas(state, node, :add)
     {:noreply, state}
   end
 
+  @doc """
+  Handles a `:nodedown` event to update the replicas list.
+
+  - Removes the node from the list of replicas.
+  - Logs the node-down event.
+
+  ## Parameters
+  - `{:nodedown, node}`: The node-down event with the node identifier.
+  - `state`: The current GenServer state.
+
+  ## Returns
+  - `{:noreply, state}` with the updated replicas.
+  """
   def handle_info({:nodedown, node}, state) do
-    Logger.info("[OrderTransactor] Node #{Node.self}: Node #{node} is up")
+    Logger.error("[OrderTransactor] Node #{Node.self}: Node #{node} is down")
     state = Impl.update_replicas(state, node, :remove)
     {:noreply, state}
   end
 
   @doc """
-  Ensures the order state is saved upon termination.
+  Ensures the order state is saved and replicas are cleaned up upon termination.
+
+  - Synchronizes the state with replicas.
+  - If the current node is the leader, it writes the order to the database and deletes it from the dispatcher.
+  - If the current node is not the leader, skips writing to the database.
   """
   def terminate(_, %{id: order_id, order: order, replicas: replicas}) do
     Impl.sync_nodes(order, replicas)
@@ -273,21 +422,22 @@ defmodule ImtOrder.OrderTransactor.Impl do
   This module provides helper functions used by `OrderTransactor.Server` to handle the lifecycle of an order.
   """
 
+  # URL of the WMS service
+  @url "http://localhost:9091"
+
   @doc """
   Processes the creation of an order.
 
-  This includes:
-  - Selecting a store based on product availability.
-  - Sending an HTTP request to notify an external service about the order.
-  - Storing the order details in a local database.
+  - Determines the store with sufficient stock for the requested products.
+  - Sends an HTTP request to notify an external service about the new order.
+  - Updates the order details with the selected store.
 
   ## Parameters
-  - `order`: A map containing the order details.
+  - `order`: A map containing the order details, including product IDs and quantities.
 
   ## Returns
-  - `{:ok, message, order}` on success.
+  - `{:ok, order}` on success, with the updated order containing the selected store.
   """
-  @url "http://localhost:9091"
   def process_order(order) do
     selected_store = Enum.find(1..200, fn store_id ->
       Enum.all?(order["products"], fn %{"id" => prod_id, "quantity" => q} ->
@@ -317,16 +467,15 @@ defmodule ImtOrder.OrderTransactor.Impl do
   @doc """
   Processes payment for an order.
 
-  This includes:
-  - Updating the order with the `transaction_id`.
-  - Triggering the delivery process asynchronously.
+  - Updates the order with the provided transaction ID.
+  - Prepares the order for the delivery process.
 
   ## Parameters
-  - `order_id`: The unique identifier for the order.
+  - `order`: The current order details as a map.
   - `transaction_id`: The identifier for the payment transaction.
 
   ## Returns
-  - `{:ok, message, order}` on success.
+  - `{:ok, order}` with the updated order containing the transaction ID.
   """
   def process_payments(order, transaction_id) do
     order = order |> Map.put("transaction_id", transaction_id)
@@ -338,15 +487,15 @@ defmodule ImtOrder.OrderTransactor.Impl do
   @doc """
   Handles the delivery process with retries and exponential backoff.
 
-  This function makes repeated HTTP requests to process the delivery,
-  applying a delay between attempts.
+  - Attempts to send an HTTP request to process the delivery.
+  - Retries on failure, applying exponential backoff between attempts.
 
   ## Parameters
   - `order`: A map containing the order details.
-  - `max_retries`: The maximum number of retries allowed.
+  - `max_retries`: The maximum number of retry attempts.
 
   ## Returns
-  - `{:ok, message}` on successful delivery.
+  - `{:ok, message}` if the delivery is successful.
   - `{:error, message}` if all attempts fail.
   """
   def process_delivery(order, max_retries) do
@@ -375,6 +524,15 @@ defmodule ImtOrder.OrderTransactor.Impl do
     end)
   end
 
+  @doc """
+  Synchronizes the order state across all replicas.
+
+  - Sends the current order details to all replicas except the local node.
+
+  ## Parameters
+  - `order`: A map containing the current order details.
+  - `replicas`: A list of nodes participating in the replication.
+  """
   def sync_nodes(order, replicas) do
     nodes = replicas -- [Node.self]
     Enum.each(nodes, fn node ->
@@ -382,6 +540,18 @@ defmodule ImtOrder.OrderTransactor.Impl do
     end)
   end
 
+  @doc """
+  Determines if the current node is the leader among the replicas.
+
+  - The leader is the first reachable node in the list of replicas.
+
+  ## Parameters
+  - `replicas`: A list of nodes participating in the replication.
+
+  ## Returns
+  - `true` if the current node is the leader.
+  - `false` otherwise.
+  """
   def is_leader(replicas) do
     case Enum.find(replicas, &Node.ping(&1) == :pong) do
       nil ->
@@ -391,6 +561,15 @@ defmodule ImtOrder.OrderTransactor.Impl do
     end
   end
 
+  @doc """
+  Shuts down all replicas for a specific order, except the local node.
+
+  - Sends a `:shutdown` message to all other replicas.
+
+  ## Parameters
+  - `replicas`: A list of nodes participating in the replication.
+  - `order_id`: The unique identifier of the order.
+  """
   def shutdown_replicas(replicas, order_id) do
     Enum.each(replicas, fn replica ->
       if replica != Node.self() do
@@ -399,6 +578,19 @@ defmodule ImtOrder.OrderTransactor.Impl do
     end)
   end
 
+  @doc """
+  Updates the list of replicas in the state.
+
+  - Ensures the node is not duplicated in the replicas list.
+
+  ## Parameters
+  - `state`: The current state containing the `replicas` list.
+  - `node`: The node to add or remove from the list.
+  - `:add` or `:remove`: The operation to perform.
+
+  ## Returns
+  - Updated state with the node added to the `replicas` list.
+  """
   def update_replicas(state, node, :add) do
     %{state | replicas: Enum.uniq([node | state.replicas])}
   end
