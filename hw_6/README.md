@@ -4,6 +4,12 @@
 
 Phase 4 builds upon the foundations established in previous phases, culminating in a robust, distributed system with advanced features for scalability, fault tolerance, and efficiency. This document outlines the process undertaken to achieve the fully functional version of the project, the architectural improvements, and instructions for deploying the system.
 
+## Introduced new dependency
+
+```
+{:libring, "~> 1.0"}
+```
+
 ## Key Features in Phase 4
 
 1. **Distributed architecture with DistMix**
@@ -119,7 +125,19 @@ Phase 4 builds upon the foundations established in previous phases, culminating 
    epmd &
    ```
 
-4. **Launch the project with 8 nodes**
+4. **Get dependencies and compile**
+
+   ```bash
+   make deps
+   ```
+
+5. **Clean data directory**
+
+   ```bash
+   make clean
+   ```
+
+6. **Launch the project with 8 nodes**
 
    ```bash
    iex -S distmix 8
